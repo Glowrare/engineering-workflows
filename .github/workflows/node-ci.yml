@@ -1,0 +1,191 @@
+name: Reusable Node.js CI
+
+on:
+  workflow_call:
+    inputs:
+      project-profile:
+        description: Application validation profile
+        required: true
+        type: string
+
+      node-version-file:
+        description: Node.js version configuration file
+        type: string
+        default: ".nvmrc"
+
+      npm-version:
+        description: Optional exact npm version
+        type: string
+        default: ""
+
+      ignore-install-scripts:
+        description: Disable installation lifecycle scripts
+        type: boolean
+        default: false
+
+    outputs:
+      resolved-node-version:
+        description: Actual Node.js version
+        value: ${{ jobs.validate.outputs.node-version }}
+
+      resolved-npm-version:
+        description: Actual npm version
+        value: ${{ jobs.validate.outputs.npm-version }}
+
+      validation-profile:
+        description: Selected validation profile
+        value: ${{ jobs.validate.outputs.profile }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate application
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    outputs:
+      node-version: ${{ steps.metadata.outputs.node-version }}
+      npm-version: ${{ steps.metadata.outputs.npm-version }}
+      profile: ${{ steps.metadata.outputs.profile }}
+
+    steps:
+      - name: Validate workflow inputs
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.project-profile }}
+          NPM_VERSION: ${{ inputs.npm-version }}
+          NODE_VERSION_FILE: ${{ inputs.node-version-file }}
+        run: |
+          set -euo pipefall
+
+          case "$PROFILE" in
+            library|service)
+              echo "Selected profile: $PROFILE"
+              ;;
+            *)
+              echo "::error::Unsupported project profile"
+              exit 1
+              ;;
+          esac
+
+          if [[ -n "$NPM_VERSION" ]] &&
+             [[ ! "$NPM_VERSION" =- ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+           echo "::error::npm-version must be an exact version"
+           exit 1
+          fi
+
+          if [[ "$NODE_VERSION_FILE" != ".nvmrc" &&
+               "NODE_VERSION_FILE" != ".node-version" ]]; then
+            echo "::error::Unsupported Node version file"
+            exit 1
+          fi
+
+      - name: Checkout consumer repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate repository prerequisites
+        shell: bash
+        env:
+          NODE_VERSION_FILE: ${{ inputs.node-version-file }}
+        run: |
+          set -euo pipefall
+
+          for file in package.json package-lock.json "$NODE_VERSION_FILE"; do
+            if [[ ! -s "$file" ]]; then
+              echo "::error::Missing or empty required file: $file"
+              exit 1
+            fi
+          done
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: ${{ inputs.node-version-file }}
+          cache: npm
+
+      - name: Validate project scripts
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.project-profile }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+
+          const pkg = JSON.parse(
+            readFileSync("package.json", "utf8")
+          );
+
+          const required = process.env.PROFILE === 'library"
+            ? ["test", "typecheck", "build", "test:package"]
+            : ["validate"];
+
+          const missing = required.filter(
+            name => typeof pkg.scripts?.[name] !== "string"
+              || !pkg.scripts[name].trim()
+          );
+
+          if(missing.length) {
+            console.error(
+              `::error::Missing required scripts: ${missing.join(", ")}`
+            );
+            process.exit(1);
+          }
+
+          console.log("Required project scripts are available");
+          NODE
+
+      - name: Configure npm version
+        if: ${{ inputs.npm-version != '' }}
+        shell: bash
+        env:
+          NPM_VERSION: ${{ inputs.npm-version}}
+        run: |
+          npm install --global "npm@$NPM_VERSION" \
+            --ignore-scripts --no-audit --no-fund
+
+          if [[ "$(npm --version)" != "$NPM_VERSION" ]]; then
+            echo "::error::Unexpected npm version"
+            exit 1
+          fi
+
+      - name: Capture runtime metadata
+        id: metadata
+        shell: bash
+        env:
+          PROFILE: ${{ inputs.project-profile }}
+        run: |
+          echo "node-version=$(node --version)" >> "$GITHUB_OUTPUT"
+          echo "npm-version=$(npm --version)" >> "$GITHUB_OUTPUT"
+          echo "profile=$PROFILE" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        if: ${{ !inputs.ignore-install-scripts }}
+        run: npm ci
+
+      - name: Install dependencies without lifecycle script
+        if: ${{ inputs.ignore-install-scripts }}
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Run library tests
+        if: ${{ inputs.project-profile == 'library' }}
+        run: npm test
+
+      - name: Typecheck library
+        if: ${{ inputs.project-profile == 'library' }}
+        run: npm run typecheck
+
+      - name: Build library
+        if: ${{ inputs.project-profile == 'library' }}
+        run: npm run build
+
+      - name: Validate package distribution
+        if: ${{ inputs.project-profile == 'library' }}
+        run: npm run test:package
+
+      - name: Validate package
+        if: ${{ inputs.project-profile == 'service' }}
+        run: npm run validate
