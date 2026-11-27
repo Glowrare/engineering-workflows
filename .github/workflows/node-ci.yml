@@ -58,7 +58,7 @@ jobs:
           NPM_VERSION: ${{ inputs.npm-version }}
           NODE_VERSION_FILE: ${{ inputs.node-version-file }}
         run: |
-          set -euo pipefall
+          set -euo pipefail
 
           case "$PROFILE" in
             library|service)
@@ -92,7 +92,7 @@ jobs:
         env:
           NODE_VERSION_FILE: ${{ inputs.node-version-file }}
         run: |
-          set -euo pipefall
+          set -euo pipefail
 
           for file in package.json package-lock.json "$NODE_VERSION_FILE"; do
             if [[ ! -s "$file" ]]; then
