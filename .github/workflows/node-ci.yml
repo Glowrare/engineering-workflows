@@ -119,7 +119,7 @@ jobs:
             readFileSync("package.json", "utf8")
           );
 
-          const required = process.env.PROFILE === 'library"
+          const required = process.env.PROFILE === "library"
             ? ["test", "typecheck", "build", "test:package"]
             : ["validate"];
 
